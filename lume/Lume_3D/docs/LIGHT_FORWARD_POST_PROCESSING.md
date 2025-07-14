@@ -79,7 +79,7 @@ When compatible post-processing is detected, LIGHT_FORWARD automatically:
 
 1. **Creates HDR render targets** instead of rendering directly to backbuffer
 2. **Enables custom render resolution** for post-processing chains
-3. **Handles MSAA properly** by creating color resolve targets when needed
+3. **Compatible with non-MSAA rendering** (MSAA requires FORWARD/DEFERRED pipeline)
 
 ```cpp
 // HDR bloom example - works automatically with LIGHT_FORWARD
@@ -127,8 +127,8 @@ This tells you:
 - **Solution**: Verify you're not accidentally using incompatible effects that force pipeline fallback
 - **Solution**: Check if HDR targets are being created unnecessarily
 
-**Problem**: MSAA not working properly
-- **Solution**: LIGHT_FORWARD with post-processing automatically handles MSAA resolve - no additional configuration needed
+**Problem**: MSAA not working with post-processing
+- **Solution**: LIGHT_FORWARD with post-processing does not support MSAA. Use non-MSAA rendering or switch to FORWARD/DEFERRED pipeline
 
 ## Performance Considerations
 

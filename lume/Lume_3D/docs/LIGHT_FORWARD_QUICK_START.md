@@ -26,8 +26,10 @@ ppConfig.factors[PostProcessConfiguration::INDEX_FXAA] = 0.75f;     // FXAA qual
 
 // 3. The pipeline automatically handles:
 //    - HDR render target creation
-//    - Proper MSAA resolve
 //    - Compatible effect validation
+//    
+// Note: MSAA is not supported with LIGHT_FORWARD post-processing
+// Use non-MSAA rendering or switch to FORWARD/DEFERRED pipeline
 ```
 
 ## Compatible Effects Checklist

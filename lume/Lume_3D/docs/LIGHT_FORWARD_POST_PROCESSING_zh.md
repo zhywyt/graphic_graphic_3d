@@ -79,7 +79,7 @@ config.factors[PostProcessConfiguration::INDEX_TONEMAP] = tonemapExposure;
 
 1. **创建 HDR 渲染目标** 而不是直接渲染到后缓冲区
 2. **启用自定义渲染分辨率** 用于后处理链
-3. **正确处理 MSAA** 在需要时创建颜色解析目标
+3. **兼容非 MSAA 渲染** (MSAA 需要 FORWARD/DEFERRED 管线)
 
 ```cpp
 // HDR 泛光示例 - 与 LIGHT_FORWARD 自动兼容
@@ -127,8 +127,8 @@ CORE3D_VALIDATION: LIGHT_FORWARD pipeline has incompatible post-processing effec
 - **解决方案**：验证您没有意外使用导致管线回退的不兼容效果
 - **解决方案**：检查是否不必要地创建了 HDR 目标
 
-**问题**：MSAA 工作不正常
-- **解决方案**：带后处理的 LIGHT_FORWARD 自动处理 MSAA 解析 - 无需额外配置
+**问题**：MSAA 与后处理不兼容
+- **解决方案**：带后处理的 LIGHT_FORWARD 不支持 MSAA。请使用非 MSAA 渲染或切换到 FORWARD/DEFERRED 管线
 
 ## 性能考虑
 

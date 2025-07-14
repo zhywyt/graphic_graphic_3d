@@ -443,13 +443,8 @@ void CreateColorTargets(IRenderNodeGpuResourceManager& gpuResourceMgr, const Ren
     desc.layerCount = targetDesc.layerCount;
     desc.imageViewType = GetImageViewType(desc.layerCount, desc.imageViewType);
     if (camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT) {
-        // LIGHT_FORWARD can use MSAA with post-processing when only current frame color is needed
-        const bool lightForwardWithCurrentFramePostProcess = 
-            (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
-            (cameraController ? cameraController->IsCurrentFrameOnlyPostProcessing() : false);
         const bool directBackbufferResolve =
-            (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
-            !lightForwardWithCurrentFramePostProcess;
+            camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD;
 
         GpuImageDesc msaaDesc = desc;
         if (directBackbufferResolve) {
@@ -469,6 +464,12 @@ void CreateColorTargets(IRenderNodeGpuResourceManager& gpuResourceMgr, const Ren
 #endif
     }
 
+    // LIGHT_FORWARD can create colorResolve targets for post-processing, but only without MSAA to avoid complexity
+    const bool lightForwardWithCurrentFramePostProcess = 
+        (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+        (cameraController ? cameraController->IsCurrentFrameOnlyPostProcessing() : false) &&
+        !(camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
+        
     if ((camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
         lightForwardWithCurrentFramePostProcess) {
 #if (CORE3D_VALIDATION_ENABLED == 1)
@@ -909,15 +910,22 @@ void RenderNodeDefaultCameraController::CreateResources()
     bool validDepthHandle = RenderHandleUtil::IsValid(camRes_.depthTarget);
     
     // LIGHT_FORWARD can support HDR when post-processing is enabled and only depends on current frame color
+    // but only without MSAA to avoid complexity with dual targets
     const bool lightForwardWithCurrentFramePostProcess = 
         (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
-        IsCurrentFrameOnlyPostProcessing();
+        IsCurrentFrameOnlyPostProcessing() &&
+        !(camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
     const bool isHdr = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
                        lightForwardWithCurrentFramePostProcess;
                        
 #if (CORE3D_VALIDATION_ENABLED == 1)
     if (lightForwardWithCurrentFramePostProcess) {
-        CORE_LOG_D("CORE3D_VALIDATION: LIGHT_FORWARD pipeline creating HDR targets for post-processing support");
+        CORE_LOG_D("CORE3D_VALIDATION: LIGHT_FORWARD pipeline creating HDR targets for post-processing support (non-MSAA)");
+    } else if ((camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+               IsCurrentFrameOnlyPostProcessing() && 
+               (camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT)) {
+        CORE_LOG_ONCE_W("light_forward_msaa_postprocess_limitation",
+            "CORE3D_VALIDATION: LIGHT_FORWARD with MSAA does not support post-processing. Use non-MSAA or switch to FORWARD/DEFERRED pipeline");
     }
 #endif
     const bool isMsaa = (camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
@@ -980,7 +988,8 @@ void RenderNodeDefaultCameraController::CreateResources()
 
         const bool lightForwardWithCurrentFramePostProcessForRenderRes = 
             (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
-            IsCurrentFrameOnlyPostProcessing();
+            IsCurrentFrameOnlyPostProcessing() &&
+            !(camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
         const bool enableRenderRes = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
                                       lightForwardWithCurrentFramePostProcessForRenderRes;
         if (enableRenderRes) {
