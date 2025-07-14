@@ -978,8 +978,11 @@ void RenderNodeDefaultCameraController::CreateResources()
 #endif
         }
 
+        const bool lightForwardWithCurrentFramePostProcessForRenderRes = 
+            (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+            IsCurrentFrameOnlyPostProcessing();
         const bool enableRenderRes = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
-                                      lightForwardWithCurrentFramePostProcess;
+                                      lightForwardWithCurrentFramePostProcessForRenderRes;
         if (enableRenderRes) {
             colorDesc.width = camRes_.renResolution.x;
             colorDesc.height = camRes_.renResolution.y;
