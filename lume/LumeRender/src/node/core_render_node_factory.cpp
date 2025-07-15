@@ -20,6 +20,7 @@
 
 #include "node/render_node_back_buffer.h"
 #include "node/render_node_bloom.h"
+#include "node/render_node_sr.h"
 #include "node/render_node_combined_post_process.h"
 #include "node/render_node_compute_generic.h"
 #include "node/render_node_create_gpu_buffers.h"
@@ -52,6 +53,7 @@ void RegisterCoreRenderNodes(RenderNodeManager& renderNodeManager)
     renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeCreateGpuBuffers>());
     renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeCreateGpuImages>());
     renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeBloom>());
+    renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeSr>());
     renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeEndFrameStaging>());
     renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeFullscreenGeneric>());
     renderNodeManager.AddRenderNodeFactory(FillRenderNodeType<RenderNodeShaderPassesGeneric>());
