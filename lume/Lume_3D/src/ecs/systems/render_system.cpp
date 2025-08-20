@@ -1993,7 +1993,22 @@ void RenderSystem::ProcessShadowCamera(const LightProcessData lpd, RenderLight& 
                 const Math::Vec3 lightDir(light.dir.x, light.dir.y, light.dir.z);
                 const Math::Vec3 up = Math::abs(Math::dot(lightDir, Math::Vec3(0.0f, 1.0f, 0.0f))) > 0.99f ? 
                                       Math::Vec3(1.0f, 0.0f, 0.0f) : Math::Vec3(0.0f, 1.0f, 0.0f);
-                const Math::Vec3 lightPos = lpd.renderScene.worldSceneCenter - lightDir * 1000.0f; // Far enough back
+                
+                // Calculate optimal light distance based on frustum extent in light direction
+                float minProjection = std::numeric_limits<float>::max();
+                float maxProjection = std::numeric_limits<float>::lowest();
+                for (int i = 0; i < 8; ++i) {
+                    const Math::Vec3 toVertex = frustumVertices[i] - lpd.renderScene.worldSceneCenter;
+                    const float projection = Math::dot(toVertex, lightDir);
+                    minProjection = Math::min(minProjection, projection);
+                    maxProjection = Math::max(maxProjection, projection);
+                }
+                
+                // Position light far enough to capture the entire frustum with some padding
+                const float frustumExtent = maxProjection - minProjection;
+                const float lightPadding = Math::max(frustumExtent * 0.1f, 10.0f); // 10% padding, minimum 10 units
+                const float lightDistance = Math::max(maxProjection + lightPadding, 50.0f); // Minimum 50 units back
+                const Math::Vec3 lightPos = lpd.renderScene.worldSceneCenter - lightDir * lightDistance;
                 const Math::Mat4X4 lightViewMatrix = Math::LookAtRh(lightPos, lpd.renderScene.worldSceneCenter, up);
                 
                 // Calculate AABB in light space
