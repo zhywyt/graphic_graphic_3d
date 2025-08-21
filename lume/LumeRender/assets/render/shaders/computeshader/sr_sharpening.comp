@@ -1,0 +1,182 @@
+/*
+ * Copyright (c) 2024 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#version 450 core
+
+// Post-processing sharpening compute shader for spatial GPU upscaling
+// Implements adaptive unsharp masking with contrast-aware sharpening
+// Reduces aliasing while enhancing detail definition
+
+#include "sr_common.h"
+
+layout(local_size_x = SR_THREAD_GROUP_SIZE_X, local_size_y = SR_THREAD_GROUP_SIZE_Y, local_size_z = SR_THREAD_GROUP_SIZE_Z) in;
+
+// Push constants
+layout(push_constant) uniform SharpeningPushConstant {
+    vec4 outputSizeInvSize;          // xy: output size, zw: 1.0 / output size
+    float sharpeningStrength;        // Sharpening intensity (0.0 - 1.0)
+    uint enableAdaptiveSharpening;   // Enable adaptive sharpening based on local content
+    float contrastThreshold;         // Minimum contrast for sharpening application
+    uint padding;
+} pc;
+
+// Input textures
+layout(set = 0, binding = 0) uniform sampler2D inputColor;
+
+// Output texture
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D outputColor;
+
+// Gaussian blur for unsharp mask
+vec4 gaussianBlur(sampler2D tex, vec2 uv, vec2 texelSize) {
+    vec4 result = vec4(0.0);
+    
+    // 5x5 Gaussian kernel (sigma = 1.0)
+    const float weights[25] = float[](
+        1.0/273.0,  4.0/273.0,  7.0/273.0,  4.0/273.0, 1.0/273.0,
+        4.0/273.0, 16.0/273.0, 26.0/273.0, 16.0/273.0, 4.0/273.0,
+        7.0/273.0, 26.0/273.0, 41.0/273.0, 26.0/273.0, 7.0/273.0,
+        4.0/273.0, 16.0/273.0, 26.0/273.0, 16.0/273.0, 4.0/273.0,
+        1.0/273.0,  4.0/273.0,  7.0/273.0,  4.0/273.0, 1.0/273.0
+    );
+    
+    int index = 0;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            vec2 offset = vec2(x, y) * texelSize;
+            result += texture(tex, uv + offset) * weights[index];
+            index++;
+        }
+    }
+    
+    return result;
+}
+
+// Calculate local contrast
+float calculateLocalContrast(sampler2D tex, vec2 uv, vec2 texelSize) {
+    vec4 center = texture(tex, uv);
+    float centerLuma = sr_luminance(center.rgb);
+    
+    float minLuma = centerLuma;
+    float maxLuma = centerLuma;
+    
+    // Sample 3x3 neighborhood to find min/max luminance
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0) continue;
+            
+            vec2 offset = vec2(x, y) * texelSize;
+            float luma = sr_luminance(texture(tex, uv + offset).rgb);
+            minLuma = min(minLuma, luma);
+            maxLuma = max(maxLuma, luma);
+        }
+    }
+    
+    return maxLuma - minLuma;
+}
+
+// Edge-preserving sharpening
+vec4 edgePreservingSharpening(vec4 original, vec4 blurred, float localContrast) {
+    vec4 detail = original - blurred;
+    
+    // Adaptive sharpening strength based on local contrast
+    float adaptiveStrength = pc.sharpeningStrength;
+    if (pc.enableAdaptiveSharpening != 0) {
+        // Reduce sharpening in low-contrast areas to avoid noise amplification
+        float contrastFactor = smoothstep(0.0, pc.contrastThreshold, localContrast);
+        adaptiveStrength *= contrastFactor;
+        
+        // Also reduce sharpening in very high contrast areas to avoid overshooting
+        float overshootProtection = 1.0 - smoothstep(pc.contrastThreshold * 2.0, 
+                                                     pc.contrastThreshold * 4.0, 
+                                                     localContrast);
+        adaptiveStrength *= overshootProtection;
+    }
+    
+    // Apply sharpening with clamping to prevent artifacts
+    vec4 sharpened = original + detail * adaptiveStrength;
+    
+    // Clamp to prevent over/undershooting
+    sharpened.rgb = clamp(sharpened.rgb, 
+                         original.rgb - vec3(SR_SHARPEN_CONTRAST_LIMIT * 0.1), 
+                         original.rgb + vec3(SR_SHARPEN_CONTRAST_LIMIT * 0.1));
+    
+    return sharpened;
+}
+
+// Noise-aware sharpening
+vec4 noiseAwareSharpening(vec4 original, vec4 blurred, float localContrast) {
+    // Estimate noise level from high-frequency content
+    vec4 highFreq = abs(original - blurred);
+    float noiseLevel = (highFreq.r + highFreq.g + highFreq.b) / 3.0;
+    
+    // Reduce sharpening in noisy areas
+    float noiseReduction = 1.0 - smoothstep(0.0, SR_SHARPEN_NOISE_THRESHOLD, noiseLevel);
+    
+    vec4 detail = original - blurred;
+    float adjustedStrength = pc.sharpeningStrength * noiseReduction;
+    
+    return original + detail * adjustedStrength;
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = ivec2(pc.outputSizeInvSize.xy);
+    
+    if (any(greaterThanEqual(coord, outputSize))) {
+        return;
+    }
+    
+    vec2 uv = (vec2(coord) + 0.5) * pc.outputSizeInvSize.zw;
+    vec2 texelSize = pc.outputSizeInvSize.zw;
+    
+    // Sample original color
+    vec4 original = texture(inputColor, uv);
+    
+    // Early exit if sharpening strength is zero
+    if (pc.sharpeningStrength <= 0.0) {
+        imageStore(outputColor, coord, original);
+        return;
+    }
+    
+    // Create blurred version for unsharp masking
+    vec4 blurred = gaussianBlur(inputColor, uv, texelSize);
+    
+    // Calculate local contrast for adaptive sharpening
+    float localContrast = calculateLocalContrast(inputColor, uv, texelSize);
+    
+    // Apply appropriate sharpening method
+    vec4 sharpened;
+    if (pc.enableAdaptiveSharpening != 0) {
+        // Use edge-preserving sharpening for better quality
+        sharpened = edgePreservingSharpening(original, blurred, localContrast);
+        
+        // Additional noise-aware processing for ultra quality
+        if (localContrast < pc.contrastThreshold * 0.5) {
+            sharpened = noiseAwareSharpening(original, blurred, localContrast);
+        }
+    } else {
+        // Simple unsharp masking
+        vec4 detail = original - blurred;
+        sharpened = original + detail * pc.sharpeningStrength;
+    }
+    
+    // Preserve original alpha
+    sharpened.a = original.a;
+    
+    // Final clamping to valid range
+    sharpened = clamp(sharpened, 0.0, 1.0);
+    
+    imageStore(outputColor, coord, sharpened);
+}

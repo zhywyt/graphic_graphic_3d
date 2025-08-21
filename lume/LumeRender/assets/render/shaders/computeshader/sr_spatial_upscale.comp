@@ -1,0 +1,162 @@
+/*
+ * Copyright (c) 2024 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#version 450 core
+
+// Main spatial upscaling compute shader
+// Implements edge-aware spatial interpolation for GPU upscaling
+// Supports multiple quality levels with different interpolation methods
+
+#include "sr_common.h"
+
+layout(local_size_x = SR_THREAD_GROUP_SIZE_X, local_size_y = SR_THREAD_GROUP_SIZE_Y, local_size_z = SR_THREAD_GROUP_SIZE_Z) in;
+
+// Push constants
+layout(push_constant) uniform SpatialUpscalePushConstant {
+    vec4 inputSizeInvSize;     // xy: input size, zw: 1.0 / input size
+    vec4 outputSizeInvSize;    // xy: output size, zw: 1.0 / output size
+    float upscaleRatio;        // Target upscaling ratio
+    uint qualityLevel;         // Quality level (0=Performance, 1=Quality, 2=Ultra)
+    float edgeThreshold;       // Edge-aware interpolation threshold
+    uint padding;
+} pc;
+
+// Input textures
+layout(set = 0, binding = 0) uniform sampler2D inputColor;
+layout(set = 0, binding = 1) uniform sampler2D edgeMask;
+layout(set = 0, binding = 2) uniform sampler2D gradientInfo;
+
+// Output texture
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outputColor;
+
+// Bicubic interpolation using 16 samples
+vec4 bicubicInterpolation(sampler2D tex, vec2 uv, vec2 texelSize) {
+    vec2 coord = uv * pc.inputSizeInvSize.xy - 0.5;
+    vec2 fCoord = fract(coord);
+    coord = floor(coord);
+    
+    vec4 result = vec4(0.0);
+    
+    for (int y = -1; y <= 2; ++y) {
+        float wy = sr_bicubic_weight(float(y) - fCoord.y);
+        for (int x = -1; x <= 2; ++x) {
+            float wx = sr_bicubic_weight(float(x) - fCoord.x);
+            vec2 sampleCoord = (coord + vec2(x, y) + 0.5) * pc.inputSizeInvSize.zw;
+            result += texture(tex, sampleCoord) * (wx * wy);
+        }
+    }
+    
+    return result;
+}
+
+// Edge-aware interpolation
+vec4 edgeAwareInterpolation(sampler2D tex, vec2 uv, vec2 texelSize, float edgeMask) {
+    if (edgeMask < pc.edgeThreshold) {
+        // Use bicubic for non-edge areas
+        return bicubicInterpolation(tex, uv, texelSize);
+    } else {
+        // Use directional filtering for edge areas
+        vec2 gradient = texture(gradientInfo, uv).xy;
+        vec2 direction = normalize(gradient);
+        
+        // Sample along and perpendicular to edge direction
+        vec4 alongEdge = (texture(tex, uv + direction * texelSize) + 
+                         texture(tex, uv - direction * texelSize)) * 0.5;
+        vec4 acrossEdge = (texture(tex, uv + vec2(-direction.y, direction.x) * texelSize) + 
+                          texture(tex, uv - vec2(-direction.y, direction.x) * texelSize)) * 0.5;
+        
+        // Blend based on edge strength
+        return mix(acrossEdge, alongEdge, edgeMask);
+    }
+}
+
+// Performance mode: Simple bilinear upscaling
+vec4 performanceUpscale(vec2 uv) {
+    return texture(inputColor, uv);
+}
+
+// Quality mode: Bicubic with edge awareness
+vec4 qualityUpscale(vec2 uv) {
+    vec2 texelSize = pc.inputSizeInvSize.zw;
+    float edge = texture(edgeMask, uv).r;
+    
+    if (edge > 0.1) {
+        return edgeAwareInterpolation(inputColor, uv, texelSize, edge);
+    } else {
+        return bicubicInterpolation(inputColor, uv, texelSize);
+    }
+}
+
+// Ultra mode: Multi-scale analysis with adaptive filtering
+vec4 ultraUpscale(vec2 uv) {
+    vec2 texelSize = pc.inputSizeInvSize.zw;
+    float edge = texture(edgeMask, uv).r;
+    
+    // Multi-scale edge analysis
+    float edge1 = texture(edgeMask, uv).r;
+    float edge2 = textureGather(edgeMask, uv).x; // Sample larger neighborhood
+    float adaptiveEdge = max(edge1, edge2 * 0.7);
+    
+    // Adaptive threshold based on local variance
+    vec4 localMean = vec4(0.0);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            localMean += texture(inputColor, uv + vec2(x, y) * texelSize);
+        }
+    }
+    localMean /= 9.0;
+    
+    vec4 center = texture(inputColor, uv);
+    float variance = distance(center.rgb, localMean.rgb);
+    float adaptiveThreshold = pc.edgeThreshold * (1.0 + variance * 2.0);
+    
+    return edgeAwareInterpolation(inputColor, uv, texelSize, adaptiveEdge);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = ivec2(pc.outputSizeInvSize.xy);
+    
+    if (any(greaterThanEqual(coord, outputSize))) {
+        return;
+    }
+    
+    // Map output coordinate to input UV space
+    vec2 uv = (vec2(coord) + 0.5) * pc.outputSizeInvSize.zw;
+    
+    // Apply appropriate upscaling method based on quality level
+    vec4 color;
+    
+    switch (pc.qualityLevel) {
+        case SR_QUALITY_PERFORMANCE:
+            color = performanceUpscale(uv);
+            break;
+        case SR_QUALITY_ULTRA:
+            color = ultraUpscale(uv);
+            break;
+        default: // SR_QUALITY_BALANCED
+            color = qualityUpscale(uv);
+            break;
+    }
+    
+    // Apply detail enhancement
+    if (pc.qualityLevel > SR_QUALITY_PERFORMANCE) {
+        vec4 original = texture(inputColor, uv);
+        vec4 enhanced = color * SR_UPSCALE_DETAIL_ENHANCE;
+        color = mix(color, enhanced, 0.3);
+    }
+    
+    imageStore(outputColor, coord, color);
+}

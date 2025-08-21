@@ -1,0 +1,93 @@
+/*
+ * Copyright (c) 2024 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#version 450 core
+
+// Edge detection compute shader for spatial GPU upscaling
+// Detects edges in the input image using Sobel operators
+// Optionally incorporates depth buffer information for enhanced edge detection
+
+#include "sr_common.h"
+
+layout(local_size_x = SR_THREAD_GROUP_SIZE_X, local_size_y = SR_THREAD_GROUP_SIZE_Y, local_size_z = SR_THREAD_GROUP_SIZE_Z) in;
+
+// Push constants
+layout(push_constant) uniform EdgeDetectionPushConstant {
+    vec4 inputSizeInvSize;    // xy: input size, zw: 1.0 / input size
+    float edgeSensitivity;    // Edge detection sensitivity threshold
+    uint useDepthEdges;       // Whether to use depth buffer for edge detection
+    float depthSensitivity;   // Depth edge detection sensitivity
+    uint padding;
+} pc;
+
+// Input textures
+layout(set = 0, binding = 0) uniform sampler2D inputColor;
+layout(set = 0, binding = 1) uniform sampler2D inputDepth;
+
+// Output textures
+layout(set = 0, binding = 2, r8) uniform writeonly image2D edgeMask;
+layout(set = 0, binding = 3, rg16f) uniform writeonly image2D gradientInfo;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 inputSize = ivec2(pc.inputSizeInvSize.xy);
+    
+    if (any(greaterThanEqual(coord, inputSize))) {
+        return;
+    }
+    
+    vec2 uv = (vec2(coord) + 0.5) * pc.inputSizeInvSize.zw;
+    vec2 texelSize = pc.inputSizeInvSize.zw;
+    
+    // Compute color-based edge using Sobel operator
+    vec2 colorGradient = sr_sobel_edge(inputColor, uv, texelSize);
+    float colorEdgeMagnitude = length(colorGradient);
+    
+    // Compute depth-based edge if enabled
+    float depthEdgeMagnitude = 0.0;
+    vec2 depthGradient = vec2(0.0);
+    
+    if (pc.useDepthEdges != 0) {
+        // Sample depth values in 3x3 neighborhood
+        float d_tl = texture(inputDepth, uv + vec2(-texelSize.x, -texelSize.y)).r;
+        float d_tr = texture(inputDepth, uv + vec2(texelSize.x, -texelSize.y)).r;
+        float d_bl = texture(inputDepth, uv + vec2(-texelSize.x, texelSize.y)).r;
+        float d_br = texture(inputDepth, uv + vec2(texelSize.x, texelSize.y)).r;
+        float d_ml = texture(inputDepth, uv + vec2(-texelSize.x, 0.0)).r;
+        float d_mr = texture(inputDepth, uv + vec2(texelSize.x, 0.0)).r;
+        float d_tm = texture(inputDepth, uv + vec2(0.0, -texelSize.y)).r;
+        float d_bm = texture(inputDepth, uv + vec2(0.0, texelSize.y)).r;
+        
+        // Sobel depth gradient
+        float gx = (d_tr + 2.0 * d_mr + d_br) - (d_tl + 2.0 * d_ml + d_bl);
+        float gy = (d_bl + 2.0 * d_bm + d_br) - (d_tl + 2.0 * d_tm + d_tr);
+        
+        depthGradient = vec2(gx, gy);
+        depthEdgeMagnitude = length(depthGradient) / pc.depthSensitivity;
+    }
+    
+    // Combine color and depth edge information
+    float combinedEdgeMagnitude = max(colorEdgeMagnitude, depthEdgeMagnitude);
+    
+    // Apply edge sensitivity threshold
+    float edgeMask = smoothstep(pc.edgeSensitivity * 0.5, pc.edgeSensitivity, combinedEdgeMagnitude);
+    
+    // Store results
+    imageStore(edgeMask, coord, vec4(edgeMask, 0.0, 0.0, 1.0));
+    
+    // Store gradient information (used for edge-aware interpolation)
+    vec2 combinedGradient = colorGradient + depthGradient * 0.5;
+    imageStore(gradientInfo, coord, vec4(combinedGradient, 0.0, 1.0));
+}

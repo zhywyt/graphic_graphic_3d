@@ -50,6 +50,8 @@
 #include "postprocesses/render_post_process_taa_node.h"
 #include "postprocesses/render_post_process_upscale.h"
 #include "postprocesses/render_post_process_upscale_node.h"
+#include "postprocesses/render_post_process_sr.h"
+#include "postprocesses/render_post_process_sr_node.h"
 
 CORE_BEGIN_NAMESPACE()
 class IEngine;
@@ -234,6 +236,20 @@ private:
             RenderPostProcessBloomNode::UID,
             "",
             [](IClassFactory&, CORE_NS::PluginToken token) -> InterfacePtr { return new RenderPostProcessBloomNode(); },
+            nullptr,
+        },
+        CORE_NS::InterfaceTypeInfo {
+            nullptr,
+            RenderPostProcessSr::UID,
+            "",
+            [](IClassFactory&, CORE_NS::PluginToken token) -> InterfacePtr { return new RenderPostProcessSr(); },
+            nullptr,
+        },
+        CORE_NS::InterfaceTypeInfo {
+            nullptr,
+            RenderPostProcessSrNode::UID,
+            "",
+            [](IClassFactory&, CORE_NS::PluginToken token) -> InterfacePtr { return new RenderPostProcessSrNode(); },
             nullptr,
         },
         CORE_NS::InterfaceTypeInfo {

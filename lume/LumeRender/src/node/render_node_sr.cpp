@@ -1,0 +1,186 @@
+/*
+ * Copyright (c) 2024 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "render_node_sr.h"
+
+#include <base/math/vector.h>
+#include <render/datastore/intf_render_data_store_manager.h>
+#include <render/datastore/intf_render_data_store_pod.h>
+#include <render/datastore/render_data_store_render_pods.h>
+#include <render/device/intf_gpu_resource_manager.h>
+#include <render/intf_render_context.h>
+#include <render/namespace.h>
+#include <render/nodecontext/intf_node_context_descriptor_set_manager.h>
+#include <render/nodecontext/intf_pipeline_descriptor_set_binder.h>
+#include <render/nodecontext/intf_render_command_list.h>
+#include <render/nodecontext/intf_render_node_context_manager.h>
+#include <render/nodecontext/intf_render_node_parser_util.h>
+#include <render/nodecontext/intf_render_node_util.h>
+
+#include "core/plugin/intf_class_factory.h"
+#include "datastore/render_data_store_pod.h"
+#include "postprocesses/render_post_process_sr.h"
+#include "util/log.h"
+
+// shaders
+#include <render/shaders/common/render_post_process_structs_common.h>
+
+using namespace BASE_NS;
+using namespace CORE_NS;
+
+RENDER_BEGIN_NAMESPACE()
+namespace {
+inline BindableImage GetBindableImage(const RenderNodeResource& res)
+{
+    return BindableImage { res.handle, res.mip, res.layer, ImageLayout::CORE_IMAGE_LAYOUT_UNDEFINED, res.secondHandle };
+}
+} // namespace
+
+void RenderNodeSr::InitNode(IRenderNodeContextManager& renderNodeContextMgr)
+{
+    valid_ = true;
+
+    renderNodeContextMgr_ = &renderNodeContextMgr;
+    ParseRenderNodeInputs();
+    CreatePostProcessInterface();
+
+    if (jsonInputs_.renderDataStore.dataStoreName.empty()) {
+        PLUGIN_LOG_E("RenderNodeSr: render data store configuration not set in render node graph");
+    }
+    if (jsonInputs_.renderDataStore.typeName != RenderDataStorePod::TYPE_NAME) {
+        PLUGIN_LOG_E("RenderNodeSr: render data store type name not supported (%s != %s)",
+            jsonInputs_.renderDataStore.typeName.data(), RenderDataStorePod::TYPE_NAME);
+        valid_ = false;
+    }
+
+    if (ppRenderSrInterface_.postProcessNode) {
+        ppRenderSrInterface_.postProcessNode->Init(ppRenderSrInterface_.postProcess, *renderNodeContextMgr_);
+    }
+
+    renderNodeContextMgr.GetDescriptorSetManager().ResetAndReserve(
+        ppRenderSrInterface_.postProcessNode->GetRenderDescriptorCounts());
+}
+
+void RenderNodeSr::PreExecuteFrame()
+{
+    if (!valid_) {
+        return;
+    }
+
+    const auto& renderNodeUtil = renderNodeContextMgr_->GetRenderNodeUtil();
+    if (jsonInputs_.hasChangeableResourceHandles) {
+        inputResources_ = renderNodeUtil.CreateInputResources(jsonInputs_.resources);
+    }
+    ProcessPostProcessConfiguration(renderNodeContextMgr_->GetRenderDataStoreManager());
+
+    RenderPostProcessSr& pp = static_cast<RenderPostProcessSr&>(*ppRenderSrInterface_.postProcess);
+    // Note: For spatial upscaling, we could extend PostProcessConfiguration to include SR-specific settings
+    // For now, we use the effect's internal properties
+    pp.propertiesData.enabled = ((ppConfig_.enableFlags & PostProcessConfiguration::ENABLE_BLOOM_BIT) > 0) ||
+                               pp.propertiesData.enabled; // Use bloom bit as placeholder for SR enable
+
+    RenderPostProcessSrNode& ppNode =
+        static_cast<RenderPostProcessSrNode&>(*ppRenderSrInterface_.postProcessNode);
+    
+    // Set input images - expect at least color input, depth is optional
+    if (!inputResources_.customInputImages.empty()) {
+        ppNode.nodeInputsData.input = GetBindableImage(inputResources_.customInputImages[0]);
+        
+        // Optional depth buffer for enhanced edge detection
+        if (inputResources_.customInputImages.size() > 1) {
+            ppNode.nodeInputsData.depth = GetBindableImage(inputResources_.customInputImages[1]);
+        }
+    }
+
+    // Set output image
+    if (!inputResources_.customOutputImages.empty()) {
+        ppNode.nodeOutputsData.output = GetBindableImage(inputResources_.customOutputImages[0]);
+    }
+
+    ppRenderSrInterface_.postProcessNode->PreExecute();
+}
+
+void RenderNodeSr::ExecuteFrame(IRenderCommandList& cmdList)
+{
+    if (!valid_) {
+        return;
+    }
+
+    ppRenderSrInterface_.postProcessNode->Execute(cmdList);
+}
+
+void RenderNodeSr::CreatePostProcessInterface()
+{
+    auto* renderClassFactory = renderNodeContextMgr_->GetRenderContext().GetInterface<IClassFactory>();
+    if (renderClassFactory) {
+        auto CreatePostProcessInterface = [&](const auto uid, auto& pp, auto& ppNode) {
+            if (pp = CreateInstance<IRenderPostProcess>(*renderClassFactory, uid); pp) {
+                ppNode = CreateInstance<IRenderPostProcessNode>(*renderClassFactory, pp->GetRenderPostProcessNodeUid());
+            }
+        };
+
+        CreatePostProcessInterface(
+            RenderPostProcessSr::UID, ppRenderSrInterface_.postProcess, ppRenderSrInterface_.postProcessNode);
+    }
+    if (!(ppRenderSrInterface_.postProcess && ppRenderSrInterface_.postProcessNode)) {
+        PLUGIN_LOG_E("RenderNodeSr: failed to create post-process interfaces");
+        valid_ = false;
+    }
+}
+
+IRenderNode::ExecuteFlags RenderNodeSr::GetExecuteFlags() const
+{
+    // Spatial upscaling is typically always needed when enabled
+    return ExecuteFlagBits::EXECUTE_FLAG_BITS_DEFAULT;
+}
+
+void RenderNodeSr::ProcessPostProcessConfiguration(const IRenderNodeRenderDataStoreManager& dataStoreMgr)
+{
+    if (!jsonInputs_.renderDataStore.dataStoreName.empty()) {
+        if (const IRenderDataStore* ds = dataStoreMgr.GetRenderDataStore(jsonInputs_.renderDataStore.dataStoreName);
+            ds) {
+            if (jsonInputs_.renderDataStore.typeName == RenderDataStorePod::TYPE_NAME) {
+                auto const dataStore = static_cast<const IRenderDataStorePod*>(ds);
+                auto const dataView = dataStore->Get(jsonInputs_.renderDataStore.configurationName);
+                if (dataView.data() && (dataView.size_bytes() == sizeof(PostProcessConfiguration))) {
+                    ppConfig_ = *((const PostProcessConfiguration*)dataView.data());
+                }
+            }
+        }
+    }
+}
+
+void RenderNodeSr::ParseRenderNodeInputs()
+{
+    const IRenderNodeParserUtil& parserUtil = renderNodeContextMgr_->GetRenderNodeParserUtil();
+    const auto jsonVal = renderNodeContextMgr_->GetNodeJson();
+    jsonInputs_.resources = parserUtil.GetInputResources(jsonVal, "resources");
+    jsonInputs_.renderDataStore = parserUtil.GetRenderDataStore(jsonVal, "renderDataStore");
+
+    const auto& renderNodeUtil = renderNodeContextMgr_->GetRenderNodeUtil();
+    inputResources_ = renderNodeUtil.CreateInputResources(jsonInputs_.resources);
+}
+
+// for plugin / factory interface
+IRenderNode* RenderNodeSr::Create()
+{
+    return new RenderNodeSr();
+}
+
+void RenderNodeSr::Destroy(IRenderNode* instance)
+{
+    delete static_cast<RenderNodeSr*>(instance);
+}
+RENDER_END_NAMESPACE()

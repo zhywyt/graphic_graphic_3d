@@ -1,0 +1,91 @@
+/*
+ * Copyright (c) 2024 Huawei Device Co., Ltd.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#version 450 core
+
+// Final output pass for spatial GPU upscaling
+// Performs final color space conversion and output formatting
+// Handles tone mapping and gamma correction if needed
+
+#include "sr_common.h"
+
+layout(local_size_x = SR_THREAD_GROUP_SIZE_X, local_size_y = SR_THREAD_GROUP_SIZE_Y, local_size_z = SR_THREAD_GROUP_SIZE_Z) in;
+
+// Push constants
+layout(push_constant) uniform OutputPushConstant {
+    vec4 outputSizeInvSize;     // xy: output size, zw: 1.0 / output size
+    float exposure;             // Exposure adjustment
+    uint enableToneMapping;     // Enable tone mapping
+    float gamma;                // Gamma correction value
+    uint padding;
+} pc;
+
+// Input texture (processed upscaled image)
+layout(set = 0, binding = 0) uniform sampler2D processedColor;
+
+// Output texture (final result)
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D finalOutput;
+
+// Simple Reinhard tone mapping
+vec3 reinhardToneMapping(vec3 color) {
+    return color / (color + vec3(1.0));
+}
+
+// ACES tone mapping (approximation)
+vec3 acesToneMapping(vec3 color) {
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    
+    return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+}
+
+// Gamma correction
+vec3 applyGamma(vec3 color, float gamma) {
+    return pow(color, vec3(1.0 / gamma));
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = ivec2(pc.outputSizeInvSize.xy);
+    
+    if (any(greaterThanEqual(coord, outputSize))) {
+        return;
+    }
+    
+    vec2 uv = (vec2(coord) + 0.5) * pc.outputSizeInvSize.zw;
+    
+    // Sample the processed color
+    vec4 color = texture(processedColor, uv);
+    
+    // Apply exposure adjustment
+    color.rgb *= pc.exposure;
+    
+    // Apply tone mapping if enabled
+    if (pc.enableToneMapping != 0) {
+        // Use ACES tone mapping for better color preservation
+        color.rgb = acesToneMapping(color.rgb);
+    }
+    
+    // Apply gamma correction
+    color.rgb = applyGamma(color.rgb, pc.gamma);
+    
+    // Ensure valid color range
+    color = clamp(color, 0.0, 1.0);
+    
+    imageStore(finalOutput, coord, color);
+}

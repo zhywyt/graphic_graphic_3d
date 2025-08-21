@@ -1,0 +1,116 @@
+{
+  "name": "Spatial GPU Upscaling Example",
+  "description": "Example render node graph configuration for spatial GPU upscaling",
+  "version": "1.0.0",
+  "renderNodes": [
+    {
+      "renderNodeType": "RenderNodeSr",
+      "nodeName": "SPATIAL_UPSCALING",
+      "resources": {
+        "customInputImages": [
+          {
+            "resourceName": "LOW_RES_COLOR",
+            "binding": 0,
+            "description": "Low resolution input color image"
+          },
+          {
+            "resourceName": "DEPTH_BUFFER",
+            "binding": 1,
+            "description": "Optional depth buffer for enhanced edge detection"
+          }
+        ],
+        "customOutputImages": [
+          {
+            "resourceName": "HIGH_RES_COLOR",
+            "binding": 0,
+            "description": "High resolution upscaled output image"
+          }
+        ]
+      },
+      "renderDataStore": {
+        "dataStoreName": "PostProcessDataStore",
+        "configurationName": "SpatialUpscalingConfig",
+        "typeName": "RenderDataStorePod"
+      }
+    }
+  ],
+  "resources": {
+    "LOW_RES_COLOR": {
+      "resourceType": "image",
+      "format": "R8G8B8A8_UNORM",
+      "width": 1280,
+      "height": 720,
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+    },
+    "DEPTH_BUFFER": {
+      "resourceType": "image", 
+      "format": "D24_UNORM_S8_UINT",
+      "width": 1280,
+      "height": 720,
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]
+    },
+    "HIGH_RES_COLOR": {
+      "resourceType": "image",
+      "format": "R8G8B8A8_UNORM", 
+      "width": 2560,
+      "height": 1440,
+      "usage": ["COLOR_ATTACHMENT", "STORAGE"]
+    }
+  },
+  "configuration": {
+    "SpatialUpscalingConfig": {
+      "enabled": true,
+      "upscaleRatio": 2.0,
+      "edgeSensitivity": 0.5,
+      "sharpeningStrength": 0.3,
+      "qualityLevel": 1,
+      "useDepthEdges": true,
+      "enableSharpening": true,
+      "adaptiveQuality": false
+    }
+  },
+  "qualityPresets": {
+    "performance": {
+      "upscaleRatio": 1.5,
+      "qualityLevel": 0,
+      "enableSharpening": false,
+      "useDepthEdges": false
+    },
+    "balanced": {
+      "upscaleRatio": 2.0,
+      "qualityLevel": 1,
+      "enableSharpening": true,
+      "useDepthEdges": true
+    },
+    "ultra": {
+      "upscaleRatio": 2.5,
+      "qualityLevel": 2,
+      "enableSharpening": true,
+      "useDepthEdges": true,
+      "adaptiveQuality": true
+    }
+  },
+  "usageExamples": {
+    "gameRendering": {
+      "description": "Upscale 1080p game rendering to 4K display",
+      "inputResolution": "1920x1080",
+      "outputResolution": "3840x2160",
+      "upscaleRatio": 2.0,
+      "recommendedQuality": "balanced"
+    },
+    "mobileGaming": {
+      "description": "Upscale 720p mobile rendering to 1080p",
+      "inputResolution": "1280x720", 
+      "outputResolution": "1920x1080",
+      "upscaleRatio": 1.5,
+      "recommendedQuality": "performance"
+    },
+    "vr": {
+      "description": "High quality upscaling for VR applications",
+      "inputResolution": "1440x1600",
+      "outputResolution": "2160x2400", 
+      "upscaleRatio": 1.5,
+      "recommendedQuality": "ultra"
+    }
+  }
+}
