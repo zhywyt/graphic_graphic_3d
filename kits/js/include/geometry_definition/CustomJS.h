@@ -30,6 +30,7 @@ public:
     enum PrimitiveTopology {
         TRIANGLE_LIST = 0,
         TRIANGLE_STRIP = 1,
+        LINE_LIST = 2,
     };
 
     ~CustomJS() override = default;

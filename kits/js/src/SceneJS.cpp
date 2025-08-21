@@ -50,6 +50,7 @@ static constexpr BASE_NS::Uid IO_QUEUE { "be88e9a0-9cd8-45ab-be48-937953dc258f" 
 #include <core/intf_engine.h>
 #include <render/device/intf_gpu_resource_manager.h>
 #include <render/intf_render_context.h>
+#include <3d/ecs/systems/intf_render_preprocessor_system.h>
 
 #ifdef __SCENE_ADAPTER__
 #include "3d_widget_adapter_log.h"
@@ -192,6 +193,7 @@ void SceneJS::Init(napi_env env, napi_value exports)
         Method<FunctionContext<Object, BASE_NS::string>, SceneJS, &SceneJS::CreateComponent>("createComponent"),
         Method<FunctionContext<Object, BASE_NS::string>, SceneJS, &SceneJS::GetComponent>("getComponent"),
         Method<FunctionContext<>, SceneJS, &SceneJS::GetRenderContext>("getRenderContext"),
+        Method<FunctionContext<>, SceneJS, &SceneJS::GetSceneBounds>("getSceneBounds"),
     };
 
     napi_value func;
@@ -1137,4 +1139,39 @@ void SceneJS::ReleaseStrongDispose(uintptr_t token)
         it->second.Reset();
         strongDisposables_.erase(it->first);
     }
+}
+
+napi_value SceneJS::GetSceneBounds(NapiApi::FunctionContext<>& ctx)
+{
+    // For now, return a default bounding box.
+    // In a full implementation, this would access the render preprocessor system
+    // to get the actual scene bounds.
+    
+    // Create a JavaScript object to return the bounds
+    NapiApi::Object bounds(ctx.GetEnv());
+    
+    // Default bounds - a 10x10x10 box centered at origin
+    NapiApi::Object center(ctx.GetEnv());
+    center.Set("x", 0.0f);
+    center.Set("y", 0.0f);
+    center.Set("z", 0.0f);
+    bounds.Set("center", center);
+    
+    // Default radius
+    bounds.Set("radius", 8.66f); // sqrt(3) * 5
+    
+    // AABB
+    NapiApi::Object min(ctx.GetEnv());
+    min.Set("x", -5.0f);
+    min.Set("y", -5.0f);
+    min.Set("z", -5.0f);
+    bounds.Set("min", min);
+    
+    NapiApi::Object max(ctx.GetEnv());
+    max.Set("x", 5.0f);
+    max.Set("y", 5.0f);
+    max.Set("z", 5.0f);
+    bounds.Set("max", max);
+    
+    return bounds.ToNapiValue();
 }
