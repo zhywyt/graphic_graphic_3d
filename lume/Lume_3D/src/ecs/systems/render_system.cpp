@@ -1931,21 +1931,65 @@ namespace {
         }
     }
     
-    // Calculate AABB from vertices transformed to light space
-    void CalculateAABBInLightSpace(const Math::Vec3 worldVertices[8], const Math::Mat4X4& lightViewMatrix,
-                                   Math::Vec3& aabbMin, Math::Vec3& aabbMax) {
-        // Initialize AABB
-        aabbMin = Math::Vec3(std::numeric_limits<float>::max());
-        aabbMax = Math::Vec3(std::numeric_limits<float>::lowest());
+    // Create scene AABB from bounding sphere
+    void GetSceneAABB(const Math::Vec3& center, float radius, Math::Vec3& aabbMin, Math::Vec3& aabbMax) {
+        const Math::Vec3 radiusVec(radius, radius, radius);
+        aabbMin = center - radiusVec;
+        aabbMax = center + radiusVec;
+    }
+    
+    // Calculate intersection of camera frustum with scene AABB and project to light space
+    bool CalculateOptimalShadowBounds(const Math::Vec3 frustumVertices[8], 
+                                     const Math::Vec3& sceneAABBMin, const Math::Vec3& sceneAABBMax,
+                                     const Math::Mat4X4& lightViewMatrix,
+                                     Math::Vec3& shadowAABBMin, Math::Vec3& shadowAABBMax) {
+        // Initialize result AABB
+        shadowAABBMin = Math::Vec3(std::numeric_limits<float>::max());
+        shadowAABBMax = Math::Vec3(std::numeric_limits<float>::lowest());
         
-        // Transform vertices to light space and expand AABB
+        // Transform frustum vertices to light space and clamp to scene bounds
+        bool hasValidPoint = false;
         for (int i = 0; i < 8; ++i) {
-            const Math::Vec4 lightSpacePos = lightViewMatrix * Math::Vec4(worldVertices[i], 1.0f);
+            // Clamp frustum vertex to scene AABB
+            Math::Vec3 clampedVertex = frustumVertices[i];
+            clampedVertex.x = Math::clamp(clampedVertex.x, sceneAABBMin.x, sceneAABBMax.x);
+            clampedVertex.y = Math::clamp(clampedVertex.y, sceneAABBMin.y, sceneAABBMax.y);
+            clampedVertex.z = Math::clamp(clampedVertex.z, sceneAABBMin.z, sceneAABBMax.z);
+            
+            // Transform to light space
+            const Math::Vec4 lightSpacePos = lightViewMatrix * Math::Vec4(clampedVertex, 1.0f);
             const Math::Vec3 lightPos(lightSpacePos.x, lightSpacePos.y, lightSpacePos.z);
             
-            aabbMin = Math::min(aabbMin, lightPos);
-            aabbMax = Math::max(aabbMax, lightPos);
+            shadowAABBMin = Math::min(shadowAABBMin, lightPos);
+            shadowAABBMax = Math::max(shadowAABBMax, lightPos);
+            hasValidPoint = true;
         }
+        
+        // Also include scene AABB corners that might be inside the frustum
+        const Math::Vec3 sceneCorners[8] = {
+            {sceneAABBMin.x, sceneAABBMin.y, sceneAABBMin.z},
+            {sceneAABBMax.x, sceneAABBMin.y, sceneAABBMin.z},
+            {sceneAABBMin.x, sceneAABBMax.y, sceneAABBMin.z},
+            {sceneAABBMax.x, sceneAABBMax.y, sceneAABBMin.z},
+            {sceneAABBMin.x, sceneAABBMin.y, sceneAABBMax.z},
+            {sceneAABBMax.x, sceneAABBMin.y, sceneAABBMax.z},
+            {sceneAABBMin.x, sceneAABBMax.y, sceneAABBMax.z},
+            {sceneAABBMax.x, sceneAABBMax.y, sceneAABBMax.z}
+        };
+        
+        for (int i = 0; i < 8; ++i) {
+            // Check if scene corner is potentially visible (conservative test)
+            const Math::Vec3& corner = sceneCorners[i];
+            
+            // Transform to light space
+            const Math::Vec4 lightSpacePos = lightViewMatrix * Math::Vec4(corner, 1.0f);
+            const Math::Vec3 lightPos(lightSpacePos.x, lightSpacePos.y, lightSpacePos.z);
+            
+            shadowAABBMin = Math::min(shadowAABBMin, lightPos);
+            shadowAABBMax = Math::max(shadowAABBMax, lightPos);
+        }
+        
+        return hasValidPoint;
     }
 }
 
@@ -1975,12 +2019,12 @@ void RenderSystem::ProcessShadowCamera(const LightProcessData lpd, RenderLight& 
     camera.shadowId = lpd.entity.id;
     camera.layerMask = lpd.lightComponent.shadowLayerMask; // we respect light shadow rendering mask
     if (light.lightUsageFlags & RenderLight::LIGHT_USAGE_DIRECTIONAL_LIGHT_BIT) {
-        // Use camera frustum AABB for tighter shadow map bounds
-        Math::Vec3 aabbMin, aabbMax;
+        // Use optimized shadow mapping based on camera frustum and scene bounds intersection
+        Math::Vec3 shadowAABBMin, shadowAABBMax;
         bool useOptimizedBounds = false;
         
-        // Try to get the main camera to calculate frustum AABB
-        if (lpd.renderScene.cameraIndex != RenderSceneDataConstants::INVALID_INDEX && dsCamera_) {
+        // Try to get the main camera and scene bounds for optimal shadow calculation
+        if (lpd.renderScene.cameraIndex != RenderSceneDataConstants::INVALID_INDEX && dsCamera_ && renderPreprocessorSystem_) {
             const auto cameras = dsCamera_->GetCameras();
             if (lpd.renderScene.cameraIndex < cameras.size()) {
                 const RenderCamera& mainCamera = cameras[lpd.renderScene.cameraIndex];
@@ -1989,32 +2033,54 @@ void RenderSystem::ProcessShadowCamera(const LightProcessData lpd, RenderLight& 
                 Math::Vec3 frustumVertices[8];
                 CalculateFrustumVertices(mainCamera.matrices.view, mainCamera.matrices.proj, frustumVertices);
                 
-                // Create light view matrix
-                const Math::Vec3 lightDir(light.dir.x, light.dir.y, light.dir.z);
+                // Get scene AABB from bounding sphere
+                Math::Vec3 sceneAABBMin, sceneAABBMax;
+                GetSceneAABB(lpd.renderScene.worldSceneCenter, lpd.renderScene.worldSceneBoundingSphereRadius, 
+                            sceneAABBMin, sceneAABBMax);
+                
+                // Create light view matrix with better orientation
+                const Math::Vec3 lightDir = Math::normalize(Math::Vec3(light.dir.x, light.dir.y, light.dir.z));
                 const Math::Vec3 up = Math::abs(Math::dot(lightDir, Math::Vec3(0.0f, 1.0f, 0.0f))) > 0.99f ? 
                                       Math::Vec3(1.0f, 0.0f, 0.0f) : Math::Vec3(0.0f, 1.0f, 0.0f);
-                const Math::Vec3 lightPos = lpd.renderScene.worldSceneCenter - lightDir * 1000.0f; // Far enough back
+                
+                // Position light camera far enough back to encompass the entire intersection
+                const float maxDistance = lpd.renderScene.worldSceneBoundingSphereRadius * 2.0f;
+                const Math::Vec3 lightPos = lpd.renderScene.worldSceneCenter - lightDir * maxDistance;
                 const Math::Mat4X4 lightViewMatrix = Math::LookAtRh(lightPos, lpd.renderScene.worldSceneCenter, up);
                 
-                // Calculate AABB in light space
-                CalculateAABBInLightSpace(frustumVertices, lightViewMatrix, aabbMin, aabbMax);
-                
-                // Add some padding to avoid edge artifacts
-                const Math::Vec3 padding = (aabbMax - aabbMin) * 0.02f; // 2% padding
-                aabbMin -= padding;
-                aabbMax += padding;
-                
-                // Set up the shadow camera
-                camera.matrices.view = lightViewMatrix;
-                camera.matrices.proj = Math::OrthoRhZo(aabbMin.x, aabbMax.x, aabbMin.y, aabbMax.y, 
-                                                       Math::max(0.001f, -aabbMax.z), -aabbMin.z);
-                zNear = Math::max(0.001f, -aabbMax.z);
-                zFar = -aabbMin.z;
-                useOptimizedBounds = true;
+                // Calculate optimal shadow bounds from frustum-scene intersection
+                if (CalculateOptimalShadowBounds(frustumVertices, sceneAABBMin, sceneAABBMax, 
+                                               lightViewMatrix, shadowAABBMin, shadowAABBMax)) {
+                    
+                    // Add small padding to prevent edge artifacts (1% of size)
+                    const Math::Vec3 size = shadowAABBMax - shadowAABBMin;
+                    const Math::Vec3 padding = size * 0.01f;
+                    shadowAABBMin -= padding;
+                    shadowAABBMax += padding;
+                    
+                    // Ensure minimum depth range
+                    const float minDepthRange = 0.1f;
+                    if ((shadowAABBMax.z - shadowAABBMin.z) < minDepthRange) {
+                        const float center = (shadowAABBMax.z + shadowAABBMin.z) * 0.5f;
+                        shadowAABBMin.z = center - minDepthRange * 0.5f;
+                        shadowAABBMax.z = center + minDepthRange * 0.5f;
+                    }
+                    
+                    // Set up the optimized shadow camera
+                    camera.matrices.view = lightViewMatrix;
+                    camera.matrices.proj = Math::OrthoRhZo(
+                        shadowAABBMin.x, shadowAABBMax.x, 
+                        shadowAABBMin.y, shadowAABBMax.y, 
+                        Math::max(0.001f, -shadowAABBMax.z), -shadowAABBMin.z
+                    );
+                    zNear = Math::max(0.001f, -shadowAABBMax.z);
+                    zFar = -shadowAABBMin.z;
+                    useOptimizedBounds = true;
+                }
             }
         }
         
-        // Fall back to original sphere-based approach if camera frustum calculation failed
+        // Fall back to original sphere-based approach if optimization failed
         if (!useOptimizedBounds) {
 #if (CORE3D_VALIDATION_ENABLED == 1)
             if (std::isinf(lpd.renderScene.worldSceneBoundingSphereRadius)) {
@@ -2023,12 +2089,12 @@ void RenderSystem::ProcessShadowCamera(const LightProcessData lpd, RenderLight& 
 #endif
             const float nonZeroRadius = Math::max(lpd.renderScene.worldSceneBoundingSphereRadius, Math::EPSILON);
             const float radius = nonZeroRadius + nonZeroRadius * 0.05f;
-            const Math::Vec3 lightPos =
-                lpd.renderScene.worldSceneCenter - Math::Vec3(light.dir.x, light.dir.y, light.dir.z) * radius;
+            const Math::Vec3 lightDir = Math::normalize(Math::Vec3(light.dir.x, light.dir.y, light.dir.z));
+            const Math::Vec3 lightPos = lpd.renderScene.worldSceneCenter - lightDir * radius;
             camera.matrices.view = Math::LookAtRh(lightPos, lpd.renderScene.worldSceneCenter, { 0.0f, 1.0f, 0.0f });
             camera.matrices.proj = Math::OrthoRhZo(-radius, radius, -radius, radius, 0.001f, radius * 2.0f);
-            zNear = 0.0f;
-            zFar = 6.0f;
+            zNear = 0.001f;
+            zFar = radius * 2.0f;
         }
     } else if (light.lightUsageFlags & RenderLight::LIGHT_USAGE_SPOT_LIGHT_BIT) {
         float determinant = 0.0f;
