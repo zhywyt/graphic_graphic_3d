@@ -20,6 +20,7 @@
 #include <Vec3Proxy.h>
 #include <napi_api.h>
 #include <scene/interface/intf_create_mesh.h>
+#include <base/math/vector.h>
 
 namespace GeometryDefinition {
 
@@ -71,6 +72,7 @@ void CustomJS::RegisterEnums(NapiApi::Object exports)
     }
     DECL_ENUM(PrimitiveTopology, TRIANGLE_LIST);
     DECL_ENUM(PrimitiveTopology, TRIANGLE_STRIP);
+    DECL_ENUM(PrimitiveTopology, LINE_LIST);
 #undef DECL_ENUM
 
     exports.Set("PrimitiveTopology", PrimitiveTopology);
@@ -99,16 +101,92 @@ GeometryDefinition* CustomJS::FromJs(NapiApi::Object jsDefinition)
 SCENE_NS::IMesh::Ptr CustomJS::CreateMesh(
     const SCENE_NS::ICreateMesh::Ptr& creator, const SCENE_NS::MeshConfig& config) const
 {
-    const auto meshData = SCENE_NS::CustomMeshData { GetTopology(), vertices_, indices_, normals_, uvs_, colors_ };
-    return creator->Create(config, meshData).GetResult();
+    if (topology_ == PrimitiveTopology::LINE_LIST) {
+        // Convert LINE_LIST to TRIANGLE_LIST by creating thin triangles for each line
+        BASE_NS::vector<BASE_NS::Math::Vec3> triangleVertices;
+        BASE_NS::vector<uint32_t> triangleIndices;
+        BASE_NS::vector<BASE_NS::Math::Vec3> triangleNormals;
+        BASE_NS::vector<BASE_NS::Math::Vec2> triangleUvs;
+        BASE_NS::vector<BASE_NS::Color> triangleColors;
+        
+        const float lineWidth = 0.01f; // Small width for wireframe lines
+        
+        // Process lines in pairs (each line needs 2 vertices)
+        for (size_t i = 0; i < indices_.size(); i += 2) {
+            if (i + 1 < indices_.size() && indices_[i] < vertices_.size() && indices_[i + 1] < vertices_.size()) {
+                const auto& v1 = vertices_[indices_[i]];
+                const auto& v2 = vertices_[indices_[i + 1]];
+                
+                // Create direction vector and perpendicular
+                auto direction = v2 - v1;
+                auto length = BASE_NS::Math::Length(direction);
+                if (length > 0.0001f) {
+                    direction = direction / length;
+                    
+                    // Create a perpendicular vector for line width
+                    BASE_NS::Math::Vec3 perpendicular = { -direction.y, direction.x, 0.0f };
+                    if (BASE_NS::Math::Length(perpendicular) < 0.001f) {
+                        perpendicular = { 0.0f, -direction.z, direction.y };
+                    }
+                    perpendicular = BASE_NS::Math::Normalize(perpendicular) * lineWidth * 0.5f;
+                    
+                    // Create 4 vertices for the line quad
+                    uint32_t baseIndex = static_cast<uint32_t>(triangleVertices.size());
+                    triangleVertices.push_back(v1 - perpendicular);
+                    triangleVertices.push_back(v1 + perpendicular);
+                    triangleVertices.push_back(v2 + perpendicular);
+                    triangleVertices.push_back(v2 - perpendicular);
+                    
+                    // Create two triangles for the quad
+                    triangleIndices.push_back(baseIndex);
+                    triangleIndices.push_back(baseIndex + 1);
+                    triangleIndices.push_back(baseIndex + 2);
+                    
+                    triangleIndices.push_back(baseIndex);
+                    triangleIndices.push_back(baseIndex + 2);
+                    triangleIndices.push_back(baseIndex + 3);
+                    
+                    // Add normals, UVs, colors if available
+                    for (int j = 0; j < 4; ++j) {
+                        if (!normals_.empty() && indices_[i] < normals_.size()) {
+                            triangleNormals.push_back(normals_[indices_[i]]);
+                        }
+                        if (!uvs_.empty() && indices_[i] < uvs_.size()) {
+                            triangleUvs.push_back(uvs_[indices_[i]]);
+                        }
+                        if (!colors_.empty() && indices_[i] < colors_.size()) {
+                            triangleColors.push_back(colors_[indices_[i]]);
+                        }
+                    }
+                }
+            }
+        }
+        
+        const auto meshData = SCENE_NS::CustomMeshData { 
+            SCENE_NS::PrimitiveTopology::TRIANGLE_LIST, 
+            triangleVertices, 
+            triangleIndices, 
+            triangleNormals, 
+            triangleUvs, 
+            triangleColors 
+        };
+        return creator->Create(config, meshData).GetResult();
+    } else {
+        // Normal triangle mesh creation
+        const auto meshData = SCENE_NS::CustomMeshData { GetTopology(), vertices_, indices_, normals_, uvs_, colors_ };
+        return creator->Create(config, meshData).GetResult();
+    }
 }
 
 SCENE_NS::PrimitiveTopology CustomJS::GetTopology() const
 {
     if (topology_ == PrimitiveTopology::TRIANGLE_LIST) {
         return SCENE_NS::PrimitiveTopology::TRIANGLE_LIST;
-    } else {
+    } else if (topology_ == PrimitiveTopology::TRIANGLE_STRIP) {
         return SCENE_NS::PrimitiveTopology::TRIANGLE_STRIP;
+    } else {
+        // LINE_LIST -> convert to TRIANGLE_LIST when creating mesh
+        return SCENE_NS::PrimitiveTopology::TRIANGLE_LIST;
     }
 }
 
@@ -116,7 +194,7 @@ bool CustomJS::SetTopology(NapiApi::Object& jsDefinition)
 {
     if (auto value = jsDefinition.Get<uint32_t>("topology"); value.IsValid()) {
         uint32_t newTopology = value;
-        if (newTopology <= PrimitiveTopology::TRIANGLE_STRIP) {
+        if (newTopology <= PrimitiveTopology::LINE_LIST) {
             topology_ = static_cast<PrimitiveTopology>(newTopology);
             return true;
         }

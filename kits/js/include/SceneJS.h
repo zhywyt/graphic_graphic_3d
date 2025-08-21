@@ -99,6 +99,7 @@ private:
     napi_value CreateComponent(NapiApi::FunctionContext<NapiApi::Object, BASE_NS::string>& ctx);
     napi_value GetComponent(NapiApi::FunctionContext<NapiApi::Object, BASE_NS::string>& ctx);
     napi_value GetRenderContext(NapiApi::FunctionContext<>& ctx);
+    napi_value GetSceneBounds(NapiApi::FunctionContext<>& ctx);
 
     // static js method
     static napi_value Load(NapiApi::FunctionContext<>& ctx);
