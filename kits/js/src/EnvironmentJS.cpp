@@ -219,13 +219,13 @@ void EnvironmentJS::SetBackgroundType(NapiApi::FunctionContext<uint32_t>& ctx)
                 type = EnvBackgroundType::EQUIRECTANGULAR;
                 break;
             case EnvironmentBackgroundType::BACKGROUND_IMAGE_ALPHA:
-                type = EnvBackgroundType::IMAGE;  // Use same underlying type but with alpha handling
+                type = EnvBackgroundType::IMAGE_ALPHA;
                 break;
             case EnvironmentBackgroundType::BACKGROUND_CUBEMAP_ALPHA:
-                type = EnvBackgroundType::CUBEMAP;  // Use same underlying type but with alpha handling
+                type = EnvBackgroundType::CUBEMAP_ALPHA;
                 break;
             case EnvironmentBackgroundType::BACKGROUND_EQUIRECTANGULAR_ALPHA:
-                type = EnvBackgroundType::EQUIRECTANGULAR;  // Use same underlying type but with alpha handling
+                type = EnvBackgroundType::EQUIRECTANGULAR_ALPHA;
                 break;
             default:
                 type = EnvBackgroundType::NONE;
