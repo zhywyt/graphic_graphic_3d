@@ -629,6 +629,12 @@ struct RenderCamera {
             BG_TYPE_EQUIRECTANGULAR = 3,
             /** Sky */
             BG_TYPE_SKY = 4,
+            /** Image (2d) with alpha transparency support */
+            BG_TYPE_IMAGE_ALPHA = 5,
+            /** Cubemap with alpha transparency support */
+            BG_TYPE_CUBEMAP_ALPHA = 6,
+            /** Equirectangular with alpha transparency support */
+            BG_TYPE_EQUIRECTANGULAR_ALPHA = 7,
         };
         /** Environment flags */
         enum EnvironmentFlagBits : uint32_t {

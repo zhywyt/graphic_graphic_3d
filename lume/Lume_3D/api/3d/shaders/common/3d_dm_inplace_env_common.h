@@ -40,6 +40,11 @@ vec3 GetEnvMapSample(in samplerCube cubeMap, in vec3 worldView, in float lodLeve
     return unpackEnvMap(textureLod(cubeMap, worldView, lodLevel));
 }
 
+vec4 GetEnvMapSampleWithAlpha(in samplerCube cubeMap, in vec3 worldView, in float lodLevel)
+{
+    return unpackEnvMapWithAlpha(textureLod(cubeMap, worldView, lodLevel));
+}
+
 void GetBlendedMultiEnvMapSample(
     in uvec4 multiEnvIndices, in vec3 worldView, in float lodLevel, in float blendVal, out vec3 color, out vec3 factor)
 {
@@ -50,6 +55,19 @@ void GetBlendedMultiEnvMapSample(
     const vec3 factor1 = uEnvironmentDataArray[env1Idx].envMapColorFactor.xyz;
     const vec3 factor2 = uEnvironmentDataArray[env2Idx].envMapColorFactor.xyz;
     color.rgb = mix(cube1.rgb, cube2, blendVal);
+    factor.rgb = mix(factor1.rgb, factor2, blendVal);
+}
+
+void GetBlendedMultiEnvMapSampleWithAlpha(
+    in uvec4 multiEnvIndices, in vec3 worldView, in float lodLevel, in float blendVal, out vec4 color, out vec3 factor)
+{
+    vec4 cube1 = GetEnvMapSampleWithAlpha(uImgCubeSampler, worldView, lodLevel);
+    vec4 cube2 = GetEnvMapSampleWithAlpha(uImgCubeSamplerBlender, worldView, lodLevel);
+    const uint env1Idx = min(multiEnvIndices.y, CORE_DEFAULT_MATERIAL_MAX_ENVIRONMENT_COUNT - 1);
+    const uint env2Idx = min(multiEnvIndices.z, CORE_DEFAULT_MATERIAL_MAX_ENVIRONMENT_COUNT - 1);
+    const vec3 factor1 = uEnvironmentDataArray[env1Idx].envMapColorFactor.xyz;
+    const vec3 factor2 = uEnvironmentDataArray[env2Idx].envMapColorFactor.xyz;
+    color = mix(cube1, cube2, blendVal);
     factor.rgb = mix(factor1.rgb, factor2, blendVal);
 }
 
@@ -113,6 +131,81 @@ void InplaceEnvironmentBlock(in uint environmentType, in uint cameraIdx, in vec2
     vec3 fogColor = color.rgb;
     InplaceFogBlock(CORE_CAMERA_FLAGS, farPlane.xyz, camPos, color, fogColor);
     color.rgb = fogColor.rgb;
+}
+
+/**
+ * Environment sampling with alpha channel preservation for transparency support
+ * Same as InplaceEnvironmentBlock but preserves alpha channel from textures
+ */
+void InplaceEnvironmentBlockWithAlpha(in uint environmentType, in uint cameraIdx, in vec2 uv, out vec4 color)
+{
+    color = vec4(0.0, 0.0, 0.0, 1.0);
+    const DefaultMaterialEnvironmentStruct envData = uEnvironmentDataArray[0U];
+    CORE_RELAXEDP const float lodLevel = envData.values.y;
+
+    // NOTE: would be nicer to calculate in the vertex shader
+
+    // remove translation from view
+    mat4 viewProjInv = uCameras[cameraIdx].viewInv;
+    viewProjInv[3] = vec4(0.0, 0.0, 0.0, 1.0);
+    viewProjInv = viewProjInv * uCameras[cameraIdx].projInv;
+
+    vec4 farPlane = viewProjInv * vec4(uv.x, uv.y, 1.0, 1.0);
+    farPlane.xyz = farPlane.xyz / farPlane.w;
+
+    vec3 colorFactor = envData.envMapColorFactor.xyz;
+
+    if ((environmentType == CORE_BACKGROUND_TYPE_CUBEMAP) ||
+        (environmentType == CORE_BACKGROUND_TYPE_EQUIRECTANGULAR) ||
+        (environmentType == CORE_BACKGROUND_TYPE_CUBEMAP_ALPHA) ||
+        (environmentType == CORE_BACKGROUND_TYPE_EQUIRECTANGULAR_ALPHA)) {
+        vec4 nearPlane = viewProjInv * vec4(uv.x, uv.y, 0.9999, 1.0);
+        nearPlane.xyz = nearPlane.xyz / nearPlane.w;
+
+        const vec3 worldView = mat3(envData.envRotation) * normalize(farPlane.xyz - nearPlane.xyz);
+
+        if ((environmentType == CORE_BACKGROUND_TYPE_CUBEMAP) ||
+            (environmentType == CORE_BACKGROUND_TYPE_CUBEMAP_ALPHA)) {
+            const uvec4 multiEnvIndices = envData.multiEnvIndices;
+            if (multiEnvIndices.x > 0) {
+                if ((environmentType == CORE_BACKGROUND_TYPE_CUBEMAP_ALPHA)) {
+                    vec4 col = vec4(0.0, 0.0, 0.0, 1.0);
+                    GetBlendedMultiEnvMapSampleWithAlpha(
+                        multiEnvIndices, worldView, lodLevel, envData.blendFactor.x, col, colorFactor);
+                    color = col;
+                } else {
+                    vec3 col = vec3(0.0);
+                    GetBlendedMultiEnvMapSample(
+                        multiEnvIndices, worldView, lodLevel, envData.blendFactor.x, col, colorFactor);
+                    color.rgb = col;
+                }
+            } else {
+                if ((environmentType == CORE_BACKGROUND_TYPE_CUBEMAP_ALPHA)) {
+                    color = GetEnvMapSampleWithAlpha(uImgCubeSampler, worldView, lodLevel);
+                } else {
+                    color.rgb = GetEnvMapSample(uImgCubeSampler, worldView, lodLevel);
+                }
+            }
+        } else {
+            const vec2 texCoord = vec2(atan(worldView.z, worldView.x) + CORE3D_DEFAULT_ENV_PI, acos(worldView.y)) /
+                                  vec2(2.0 * CORE3D_DEFAULT_ENV_PI, CORE3D_DEFAULT_ENV_PI);
+            color = textureLod(uImgSampler, texCoord, lodLevel);
+        }
+    } else if ((environmentType == CORE_BACKGROUND_TYPE_IMAGE) ||
+               (environmentType == CORE_BACKGROUND_TYPE_IMAGE_ALPHA)) {
+        const vec2 texCoord = (uv + vec2(1.0)) * 0.5;
+        color = textureLod(uImgSampler, texCoord, lodLevel);
+    }
+
+    color.xyz *= colorFactor.xyz;
+
+    // fog - preserve alpha by not overwriting it
+    const vec3 camPos = uCameras[cameraIdx].viewInv[3].xyz;
+    vec3 fogColor = color.rgb;
+    vec4 colorWithAlpha = color; // preserve alpha
+    InplaceFogBlock(CORE_CAMERA_FLAGS, farPlane.xyz, camPos, colorWithAlpha, fogColor);
+    color.rgb = fogColor.rgb;
+    // keep original alpha: color.a = color.a;
 }
 
 #else

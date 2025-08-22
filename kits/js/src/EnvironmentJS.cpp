@@ -74,6 +74,9 @@ void EnvironmentJS::Init(napi_env env, napi_value exports)
     DECL_ENUM(eType, BACKGROUND_IMAGE);
     DECL_ENUM(eType, BACKGROUND_CUBEMAP);
     DECL_ENUM(eType, BACKGROUND_EQUIRECTANGULAR);
+    DECL_ENUM(eType, BACKGROUND_IMAGE_ALPHA);
+    DECL_ENUM(eType, BACKGROUND_CUBEMAP_ALPHA);
+    DECL_ENUM(eType, BACKGROUND_EQUIRECTANGULAR_ALPHA);
 #undef DECL_ENUM
     exp.Set("EnvironmentBackgroundType", eType);
 }
@@ -214,6 +217,15 @@ void EnvironmentJS::SetBackgroundType(NapiApi::FunctionContext<uint32_t>& ctx)
                 break;
             case EnvironmentBackgroundType::BACKGROUND_EQUIRECTANGULAR:
                 type = EnvBackgroundType::EQUIRECTANGULAR;
+                break;
+            case EnvironmentBackgroundType::BACKGROUND_IMAGE_ALPHA:
+                type = EnvBackgroundType::IMAGE;  // Use same underlying type but with alpha handling
+                break;
+            case EnvironmentBackgroundType::BACKGROUND_CUBEMAP_ALPHA:
+                type = EnvBackgroundType::CUBEMAP;  // Use same underlying type but with alpha handling
+                break;
+            case EnvironmentBackgroundType::BACKGROUND_EQUIRECTANGULAR_ALPHA:
+                type = EnvBackgroundType::EQUIRECTANGULAR;  // Use same underlying type but with alpha handling
                 break;
             default:
                 type = EnvBackgroundType::NONE;
