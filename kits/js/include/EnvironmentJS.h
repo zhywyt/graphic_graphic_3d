@@ -62,6 +62,30 @@ private:
          * @since 12
          */
         BACKGROUND_EQUIRECTANGULAR = 3,
+
+        /**
+         * The background is image with alpha transparency support.
+         *
+         * @syscap SystemCapability.ArkUi.Graphics3D
+         * @since 12
+         */
+        BACKGROUND_IMAGE_ALPHA = 4,
+
+        /**
+         * The background is cubemap with alpha transparency support.
+         *
+         * @syscap SystemCapability.ArkUi.Graphics3D
+         * @since 12
+         */
+        BACKGROUND_CUBEMAP_ALPHA = 5,
+
+        /**
+         * The background is equirectangular with alpha transparency support.
+         *
+         * @syscap SystemCapability.ArkUi.Graphics3D
+         * @since 12
+         */
+        BACKGROUND_EQUIRECTANGULAR_ALPHA = 6,
     };
 
     napi_value GetBackgroundType(NapiApi::FunctionContext<>& ctx);

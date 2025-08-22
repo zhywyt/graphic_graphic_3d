@@ -36,6 +36,14 @@ vec3 unpackEnvMap(vec4 envColorRgbd)
     return envColorRgbd.xyz * (1.0 / envColorRgbd.a);
 }
 
+// Unpack environment color with alpha preservation for transparency support
+vec4 unpackEnvMapWithAlpha(vec4 envColorRgba)
+{
+    // For RGBA textures, preserve the alpha channel for transparency
+    // For RGBD textures, use alpha as scaling but keep original alpha for transparency
+    return vec4(envColorRgba.xyz * (1.0 / max(envColorRgba.a, 0.001)), envColorRgba.a);
+}
+
 // RGBD or just RGB -> ALPHA = 1.0
 vec3 unpackIblRadiance(vec4 envColorRgbd)
 {

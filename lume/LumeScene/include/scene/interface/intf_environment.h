@@ -30,6 +30,12 @@ enum class EnvBackgroundType : uint8_t {
     CUBEMAP = 2,
     /** Background equirectangular */
     EQUIRECTANGULAR = 3,
+    /** Background image with alpha transparency support */
+    IMAGE_ALPHA = 4,
+    /** Background cubemap with alpha transparency support */
+    CUBEMAP_ALPHA = 5,
+    /** Background equirectangular with alpha transparency support */
+    EQUIRECTANGULAR_ALPHA = 6,
 };
 
 class IEnvironment : public CORE_NS::IInterface {

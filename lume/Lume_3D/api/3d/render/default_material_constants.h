@@ -116,6 +116,8 @@ struct DefaultMaterialShaderConstants {
     static constexpr const BASE_NS::string_view RENDER_SLOT_DEPTH_VSM { "CORE3D_RS_DM_DEPTH_VSM" };
     /** Default environment render slot */
     static constexpr const BASE_NS::string_view RENDER_SLOT_FORWARD_ENVIRONMENT { "CORE3D_RS_DM_ENV" };
+    /** Default environment render slot with alpha transparency support */
+    static constexpr const BASE_NS::string_view RENDER_SLOT_FORWARD_ENVIRONMENT_ALPHA { "CORE3D_RS_DM_ENV_ALPHA" };
 
     /** Default forward vertex input declaration */
     static constexpr const BASE_NS::string_view VERTEX_INPUT_DECLARATION_FORWARD {
