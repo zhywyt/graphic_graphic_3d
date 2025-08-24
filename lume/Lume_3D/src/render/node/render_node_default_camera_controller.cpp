@@ -75,6 +75,17 @@ constexpr bool USE_IMMUTABLE_SAMPLERS { false };
 constexpr float CUBE_MAP_LOD_COEFF { 8.0f };
 constexpr string_view POD_DATA_STORE_NAME { "RenderDataStorePod" };
 
+// Post-processing effects that only depend on current frame color (compatible with LIGHT_FORWARD)
+constexpr uint32_t CURRENT_FRAME_ONLY_PP_FLAGS = 
+    RENDER_NS::PostProcessConfiguration::ENABLE_TONEMAP_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_VIGNETTE_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_DITHER_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_COLOR_CONVERSION_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_COLOR_FRINGE_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_BLUR_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_BLOOM_BIT |
+    RENDER_NS::PostProcessConfiguration::ENABLE_FXAA_BIT;
+
 void ValidateRenderCamera(RenderCamera& camera)
 {
     if (camera.renderPipelineType == RenderCamera::RenderPipelineType::DEFERRED) {
@@ -329,6 +340,7 @@ void CreateVelocityTarget(IRenderNodeGpuResourceManager& gpuResourceMgr, const R
 {
     const bool createVelocity = (camera.renderPipelineType == RenderCamera::RenderPipelineType::DEFERRED) ||
                                 (camera.renderPipelineType == RenderCamera::RenderPipelineType::FORWARD);
+    // Note: LIGHT_FORWARD with current-frame-only post-processing doesn't need velocity targets
     if (createVelocity) {
         GpuImageDesc desc = cameraResourceSetup.inputImageDescs.velocityNormal;
         desc.width = targetDesc.width;
@@ -418,7 +430,8 @@ void CreateHistoryTargets(IRenderNodeGpuResourceManager& gpuResourceMgr, const R
 void CreateColorTargets(IRenderNodeGpuResourceManager& gpuResourceMgr, const RenderCamera& camera,
     const GpuImageDesc& targetDesc, const string_view us, const string_view customCamRngId,
     const RenderNodeDefaultCameraController::CameraResourceSetup& cameraResourceSetup,
-    RenderNodeDefaultCameraController::CreatedTargets& createdTargets)
+    RenderNodeDefaultCameraController::CreatedTargets& createdTargets,
+    const RenderNodeDefaultCameraController* cameraController)
 {
 #if (CORE3D_VALIDATION_ENABLED == 1)
     CORE_LOG_D("CORE3D_VALIDATION: creating camera color targets %s", customCamRngId.data());
@@ -451,7 +464,14 @@ void CreateColorTargets(IRenderNodeGpuResourceManager& gpuResourceMgr, const Ren
 #endif
     }
 
-    if (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) {
+    // LIGHT_FORWARD can create colorResolve targets for post-processing, but only without MSAA to avoid complexity
+    const bool lightForwardWithCurrentFramePostProcess = 
+        (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+        (cameraController ? cameraController->IsCurrentFrameOnlyPostProcessing() : false) &&
+        !(camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
+        
+    if ((camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
+        lightForwardWithCurrentFramePostProcess) {
 #if (CORE3D_VALIDATION_ENABLED == 1)
         createdTargets.colorResolve = gpuResourceMgr.Create(
             us + DefaultMaterialCameraConstants::CAMERA_COLOR_PREFIX_NAME + "RESL_" + customCamRngId, desc);
@@ -888,7 +908,26 @@ void RenderNodeDefaultCameraController::CreateResources()
     IRenderNodeGpuResourceManager& gpuResMgr = renderNodeContextMgr_->GetGpuResourceManager();
     const auto& camera = currentScene_.camera;
     bool validDepthHandle = RenderHandleUtil::IsValid(camRes_.depthTarget);
-    const bool isHdr = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD);
+    
+    // LIGHT_FORWARD can support HDR when post-processing is enabled and only depends on current frame color
+    // but only without MSAA to avoid complexity with dual targets
+    const bool lightForwardWithCurrentFramePostProcess = 
+        (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+        IsCurrentFrameOnlyPostProcessing() &&
+        !(camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
+    const bool isHdr = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
+                       lightForwardWithCurrentFramePostProcess;
+                       
+#if (CORE3D_VALIDATION_ENABLED == 1)
+    if (lightForwardWithCurrentFramePostProcess) {
+        CORE_LOG_D("CORE3D_VALIDATION: LIGHT_FORWARD pipeline creating HDR targets for post-processing support (non-MSAA)");
+    } else if ((camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+               IsCurrentFrameOnlyPostProcessing() && 
+               (camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT)) {
+        CORE_LOG_ONCE_W("light_forward_msaa_postprocess_limitation",
+            "CORE3D_VALIDATION: LIGHT_FORWARD with MSAA does not support post-processing. Use non-MSAA or switch to FORWARD/DEFERRED pipeline");
+    }
+#endif
     const bool isMsaa = (camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
     const bool isDeferred = (camera.renderPipelineType == RenderCamera::RenderPipelineType::DEFERRED);
     const bool isMultiview = (camera.multiViewCameraCount > 0U);
@@ -947,7 +986,12 @@ void RenderNodeDefaultCameraController::CreateResources()
 #endif
         }
 
-        const bool enableRenderRes = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD);
+        const bool lightForwardWithCurrentFramePostProcessForRenderRes = 
+            (camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) && 
+            IsCurrentFrameOnlyPostProcessing() &&
+            !(camera.flags & RenderCamera::CAMERA_FLAG_MSAA_BIT);
+        const bool enableRenderRes = (camera.renderPipelineType != RenderCamera::RenderPipelineType::LIGHT_FORWARD) || 
+                                      lightForwardWithCurrentFramePostProcessForRenderRes;
         if (enableRenderRes) {
             colorDesc.width = camRes_.renResolution.x;
             colorDesc.height = camRes_.renResolution.y;
@@ -959,7 +1003,7 @@ void RenderNodeDefaultCameraController::CreateResources()
         const string_view us = stores_.dataStoreNameScene;
         if (colorTargetChanged) {
             CreateColorTargets(
-                gpuResMgr, camera, colorDesc, us, currentScene_.customCamRngName, camRes_, createdTargets_);
+                gpuResMgr, camera, colorDesc, us, currentScene_.customCamRngName, camRes_, createdTargets_, this);
         }
         if (depthTargetChanged) {
             CreateDepthTargets(
@@ -1309,8 +1353,52 @@ void RenderNodeDefaultCameraController::UpdatePostProcessConfiguration()
             const PostProcessConfiguration* data = (const PostProcessConfiguration*)dataView.data();
             currentRenderPPConfiguration_ =
                 renderNodeContextMgr_->GetRenderNodeUtil().GetRenderPostProcessConfiguration(*data);
+                
+#if (CORE3D_VALIDATION_ENABLED == 1)
+            // Validate LIGHT_FORWARD usage with post-processing
+            if (currentScene_.camera.renderPipelineType == RenderCamera::RenderPipelineType::LIGHT_FORWARD) {
+                const uint32_t enabledFlags = currentRenderPPConfiguration_.flags.x;
+                if (enabledFlags != 0U) {
+                    const uint32_t incompatibleFlags = enabledFlags & (~CURRENT_FRAME_ONLY_PP_FLAGS);
+                    if (incompatibleFlags != 0U) {
+                        CORE_LOG_W("CORE3D_VALIDATION: LIGHT_FORWARD camera '%s' has incompatible post-processing effects "
+                                  "that require additional data (flags: 0x%x). Consider using FORWARD pipeline instead.",
+                                  currentScene_.camera.name.c_str(), incompatibleFlags);
+                    }
+                }
+            }
+#endif
         }
     }
+}
+
+bool RenderNodeDefaultCameraController::IsCurrentFrameOnlyPostProcessing() const
+{
+    // Check if post-processing is enabled and only uses effects that depend on current frame color
+    const uint32_t enabledFlags = currentRenderPPConfiguration_.flags.x;
+    const bool hasPostProcessing = (enabledFlags != 0U);
+    
+    if (!hasPostProcessing) {
+        return false; // No post-processing
+    }
+    
+    // Check if only current-frame-compatible effects are enabled
+    const uint32_t incompatibleFlags = enabledFlags & (~CURRENT_FRAME_ONLY_PP_FLAGS);
+    const bool isCompatible = (incompatibleFlags == 0U);
+    
+#if (CORE3D_VALIDATION_ENABLED == 1)
+    if (isCompatible) {
+        CORE_LOG_ONCE_I("light_forward_postprocess_enabled",
+            "CORE3D_VALIDATION: LIGHT_FORWARD pipeline using current-frame-only post-processing (flags: 0x%x)", 
+            enabledFlags);
+    } else if (hasPostProcessing) {
+        CORE_LOG_ONCE_W("light_forward_postprocess_incompatible",
+            "CORE3D_VALIDATION: LIGHT_FORWARD pipeline has incompatible post-processing effects (enabled: 0x%x, incompatible: 0x%x)",
+            enabledFlags, incompatibleFlags);
+    }
+#endif
+    
+    return isCompatible;
 }
 
 void RenderNodeDefaultCameraController::ClusterLights(RENDER_NS::IRenderCommandList& cmdList)

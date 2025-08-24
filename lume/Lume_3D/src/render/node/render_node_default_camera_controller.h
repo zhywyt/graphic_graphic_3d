@@ -45,6 +45,9 @@ public:
         return 0U;
     }
 
+    // Helper function to check if current post-processing only depends on current frame color
+    bool IsCurrentFrameOnlyPostProcessing() const;
+
     // for plugin / factory interface
     static constexpr BASE_NS::Uid UID { "46144344-29f8-4fc1-913a-ed5f6f2e20d0" };
     static constexpr char const* TYPE_NAME = "RenderNodeDefaultCameraController";
